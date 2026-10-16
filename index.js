@@ -128,9 +128,15 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (commandName === '查看設定') {
         const channelMention = db.targetChannelId ? `<#${db.targetChannelId}>` : '尚未設定';
         const adminList = db.adminIds.length > 0 ? db.adminIds.map(id => `<@${id}>`).join(', ') : '無';
+        
         const infoEmbed = new EmbedBuilder()
             .setTitle('⚙️ 當前設定')
-            .addFields({ name: '頻道', value: channelMention }, { name: '管理員', value: adminList });
+            .setColor(0xF1C40F)
+            .addFields([
+                { name: '頻道', value: channelMention },
+                { name: '管理員', value: adminList }
+            ]);
+
         return interaction.reply({ embeds: [infoEmbed], flags: [MessageFlags.Ephemeral] });
     }
 
@@ -149,7 +155,6 @@ client.on(Events.MessageCreate, async (message) => {
     const attachment = message.attachments.first();
     if (!attachment || !attachment.contentType || !attachment.contentType.startsWith('image/')) return;
 
-    // 組合按鈕與審核面板
     const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
             .setCustomId(`approve_${message.author.id}_${Buffer.from(attachment.url).toString('base64')}`)
@@ -161,7 +166,6 @@ client.on(Events.MessageCreate, async (message) => {
             .setStyle(ButtonStyle.Danger)
     );
 
-    // 列出管理員 @ 提及，確保管理員能第一時間注意到
     const adminMentions = db.adminIds.length > 0 ? db.adminIds.map(id => `<@${id}>`).join(' ') : '（未設定管理員）';
 
     const embed = new EmbedBuilder()
@@ -170,7 +174,6 @@ client.on(Events.MessageCreate, async (message) => {
         .setImage(attachment.url)
         .setColor(0x3498DB);
 
-    // 直接發送在同一個頻道內！
     await message.channel.send({
         content: `請管理員進行審核：${adminMentions}`,
         embeds: [embed],
@@ -195,7 +198,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
             const emojiName = `emoji_${Date.now().toString().slice(-6)}`;
             const guild = interaction.guild; 
 
-            // 建立伺服器表情符號 (Custom Emoji)
             const createdEmoji = await guild.emojis.create({
                 attachment: imageUrl,
                 name: emojiName,
@@ -204,7 +206,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
             await interaction.editReply(`✅ 已成功新增表情符號：${createdEmoji} (名稱: \`${emojiName}\`)`);
 
-            // 同時私訊通知投稿者：包含投稿者名稱、以及直接把生成好的表情符號貼上
             try {
                 const authorUser = await client.users.fetch(authorId);
                 await authorUser.send(`🎉 **您的表情符號已成功新增！**\n**投稿者：** ${authorUser.tag} (<@${authorId}>)\n**生成的表情符號：** ${createdEmoji}`);
