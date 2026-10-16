@@ -11,6 +11,8 @@ const {
     REST,
     Routes
 } = require('discord.js');
+const fs = require('fs');
+const path = require('path');
 
 const client = new Client({
     intents: [
@@ -22,11 +24,32 @@ const client = new Client({
     partials: [Partials.Message, Partials.Channel, Partials.Reaction]
 });
 
-// 記憶體內儲存設定（機器人啟動時也可透過預設環境變數載入）
-let config = {
-    targetChannelId: process.env.TARGET_CHANNEL_ID || null,
-    adminIds: process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',').map(id => id.trim()) : []
-};
+// ----------------------------------------------------
+// 資料持久化管理 (確保重啟後設定不消失)
+// ----------------------------------------------------
+const DB_FILE = path.join(__dirname, 'database.json');
+
+function loadDB() {
+    try {
+        if (fs.existsSync(DB_FILE)) {
+            const data = fs.readFileSync(DB_FILE, 'utf8');
+            return JSON.parse(data);
+        }
+    } catch (e) {
+        console.error('讀取資料庫失敗：', e);
+    }
+    return { targetChannelId: null, adminIds: [] };
+}
+
+function saveDB(db) {
+    try {
+        fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf8');
+    } catch (e) {
+        console.error('儲存資料庫失敗：', e);
+    }
+}
+
+let db = loadDB();
 
 // ----------------------------------------------------
 // 註冊斜線指令 (Slash Commands)
@@ -70,6 +93,11 @@ const commands = [
     new SlashCommandBuilder()
         .setName('查看設定')
         .setDescription('查看目前設定的投稿頻道與管理員清單')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+
+    new SlashCommandBuilder()
+        .setName('重置設定')
+        .setDescription('清除所有已設定的頻道與管理員資料')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
 ].map(command => command.toJSON());
 
@@ -77,10 +105,9 @@ const commands = [
 client.once('ready', async () => {
     console.log(`🤖 貼圖新增工具已成功上線！登入身分：${client.user.tag}`);
 
-    // 自動向 Discord 註冊全球斜線指令
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {
-        console.log('⏳ 開始註冊斜線指令...');
+        console.log('⏳ 開始註冊全球斜線指令...');
         await rest.put(
             Routes.applicationCommands(client.user.id),
             { body: commands }
@@ -92,7 +119,7 @@ client.once('ready', async () => {
 });
 
 // ----------------------------------------------------
-// 處理斜線指令互動 (Slash Command Interaction)
+// 處理斜線指令互動
 // ----------------------------------------------------
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
@@ -102,70 +129,74 @@ client.on('interactionCreate', async (interaction) => {
     // 1. 幫助頁面
     if (commandName === 'help' || commandName === '幫助') {
         const helpEmbed = new EmbedBuilder()
-            .setTitle('📖 貼圖新增工具 — 使用幫助頁面')
+            .setTitle('📖 貼圖新增工具 — 幫助與說明指南')
             .setColor(0x00A8FF)
-            .setDescription('這是一個自動化投稿與審核伺服器貼圖的機器人！')
+            .setDescription('本機器人能自動攔截指定頻道的投稿圖片，並發送審核通知給管理員。')
             .addFields(
                 { 
                     name: '🖼️ 一般用戶投稿方式', 
-                    value: '只需要在指定的 **投稿頻道** 發送圖片，機器人就會自動攔截並送交管理員審核。' 
+                    value: '直接在指定的 **投稿頻道** 發送圖片即可，機器人會自動送出審核並保留原圖。' 
                 },
                 { 
                     name: '⚙️ 管理員設定指令 (需伺服器管理權限)', 
                     value: 
                         '`/設定頻道 [頻道]` — 指定接收投稿圖片的頻道\n' +
-                        '`/新增管理員 [成員]` — 新增獲得審核權限的管理員\n' +
-                        '`/刪除管理員 [成員]` — 移除管理員的審核權限\n' +
-                        '`/查看設定` — 查看目前的投稿頻道與管理員清單'
+                        '`/新增管理員 [成員]` — 新增審核管理員\n' +
+                        '`/刪除管理員 [成員]` — 移除審核管理員\n' +
+                        '`/查看設定` — 檢查目前設定\n' +
+                        '`/重置設定` — 清除所有頻道與管理員資料'
                 },
                 { 
-                    name: '✉️ 審核流程', 
-                    value: '當有人投稿時，所有設定的管理員會在私訊收到帶有 **[是] / [否]** 按鈕的審核通知。審核通過後自動上架貼圖並通知投稿者。' 
+                    name: '✉️ 審核與上架流程', 
+                    value: '管理員會在私訊收到帶有 **[是] / [否]** 按鈕的審核通知。點擊「是」將自動建立為伺服器貼圖並私訊通知投稿者。' 
                 }
             )
-            .setFooter({ text: '貼圖新增工具 • Discord Bot' })
+            .setFooter({ text: '貼圖新增工具 • 永久儲存設定' })
             .setTimestamp();
 
         return interaction.reply({ embeds: [helpEmbed], ephemeral: true });
     }
 
-    // 權限檢查（後續管理指令僅限伺服器管理員使用）
-    if (!interaction.memberPermissions.has(PermissionFlagsBits.Administrator) && !config.adminIds.includes(interaction.user.id)) {
+    // 權限檢查（後續管理指令皆需管理員權限）
+    if (!interaction.memberPermissions.has(PermissionFlagsBits.Administrator) && !db.adminIds.includes(interaction.user.id)) {
         return interaction.reply({ content: '❌ 您沒有權限使用此管理設定指令！', ephemeral: true });
     }
 
     // 2. 設定頻道
     if (commandName === '設定頻道') {
         const channel = interaction.options.getChannel('頻道');
-        config.targetChannelId = channel.id;
+        db.targetChannelId = channel.id;
+        saveDB(db);
         return interaction.reply({ content: `✅ 成功將投稿頻道設定為：${channel}`, ephemeral: true });
     }
 
     // 3. 新增管理員
     if (commandName === '新增管理員') {
         const targetUser = interaction.options.getUser('成員');
-        if (config.adminIds.includes(targetUser.id)) {
-            return interaction.reply({ content: `⚠️ ${targetUser.tag} 已經在管理員名單中！`, ephemeral: true });
+        if (db.adminIds.includes(targetUser.id)) {
+            return interaction.reply({ content: `⚠️ ${targetUser.tag} 已經在管理員名單中了！`, ephemeral: true });
         }
-        config.adminIds.push(targetUser.id);
+        db.adminIds.push(targetUser.id);
+        saveDB(db);
         return interaction.reply({ content: `✅ 已將 ${targetUser.tag} (<@${targetUser.id}>) 新增為貼圖審核管理員！`, ephemeral: true });
     }
 
     // 4. 刪除管理員
     if (commandName === '刪除管理員') {
         const targetUser = interaction.options.getUser('成員');
-        if (!config.adminIds.includes(targetUser.id)) {
+        if (!db.adminIds.includes(targetUser.id)) {
             return interaction.reply({ content: `⚠️ ${targetUser.tag} 不在管理員名單中！`, ephemeral: true });
         }
-        config.adminIds = config.adminIds.filter(id => id !== targetUser.id);
+        db.adminIds = db.adminIds.filter(id => id !== targetUser.id);
+        saveDB(db);
         return interaction.reply({ content: `✅ 已將 ${targetUser.tag} 從管理員名單中移除！`, ephemeral: true });
     }
 
     // 5. 查看設定
     if (commandName === '查看設定') {
-        const channelMention = config.targetChannelId ? `<#${config.targetChannelId}>` : '尚未設定';
-        const adminList = config.adminIds.length > 0 
-            ? config.adminIds.map(id => `<@${id}>`).join(', ') 
+        const channelMention = db.targetChannelId ? `<#${db.targetChannelId}>` : '尚未設定';
+        const adminList = db.adminIds.length > 0 
+            ? db.adminIds.map(id => `<@${id}>`).join(', ') 
             : '尚未設定任何指定管理員';
 
         const infoEmbed = new EmbedBuilder()
@@ -178,27 +209,31 @@ client.on('interactionCreate', async (interaction) => {
 
         return interaction.reply({ embeds: [infoEmbed], ephemeral: true });
     }
+
+    // 6. 重置設定
+    if (commandName === '重置設定') {
+        db.targetChannelId = null;
+        db.adminIds = [];
+        saveDB(db);
+        return interaction.reply({ content: '🗑️ 已成功清空所有頻道與管理員設定資料！', ephemeral: true });
+    }
 });
 
 // ----------------------------------------------------
-// 監聽投稿頻道訊息 (Message Intercept)
+// 監聽投稿頻道訊息 (自動攔截圖片並私訊管理員，保留原圖)
 // ----------------------------------------------------
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
 
-    // 未設定頻道時直接忽略
-    if (!config.targetChannelId || message.channel.id !== config.targetChannelId) return;
+    if (!db.targetChannelId || message.channel.id !== db.targetChannelId) return;
 
-    // 檢查是否有附帶圖片
     const attachment = message.attachments.first();
     if (!attachment || !attachment.contentType || !attachment.contentType.startsWith('image/')) {
         return;
     }
 
-    // 刪除原訊息保持頻道乾淨
-    try { await message.delete(); } catch (e) {}
+    // (注意：此處已移除自動刪除原訊息的程式碼，圖片會正常留在頻道中)
 
-    // 建立審核按鈕
     const row = new ActionRowBuilder()
         .addComponents(
             new ButtonBuilder()
@@ -217,13 +252,13 @@ client.on('messageCreate', async (message) => {
         .setImage(attachment.url)
         .setColor(0x3498DB);
 
-    // 私訊通知所有設定的管理員
-    if (config.adminIds.length === 0) {
-        console.log('⚠️ 未設定任何管理員，無法發送審核通知！');
+    if (db.adminIds.length === 0) {
+        console.log('⚠️ 尚未設定任何管理員，無法發送審核通知！');
         return;
     }
 
-    for (const adminId of config.adminIds) {
+    // 私訊所有管理員
+    for (const adminId of db.adminIds) {
         try {
             const adminUser = await client.users.fetch(adminId);
             if (adminUser) {
@@ -245,13 +280,12 @@ client.on('messageCreate', async (message) => {
 });
 
 // ----------------------------------------------------
-// 監聽按鈕點擊事件 (Button Interaction)
+// 監聽按鈕點擊事件 (審核動作與貼圖建立)
 // ----------------------------------------------------
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton()) return;
 
-    // 驗證按鈕點擊者是否為設定的管理員
-    if (!config.adminIds.includes(interaction.user.id)) {
+    if (!db.adminIds.includes(interaction.user.id)) {
         return interaction.reply({ content: '❌ 您不是審核管理員，無法進行此操作！', ephemeral: true });
     }
 
@@ -265,11 +299,10 @@ client.on('interactionCreate', async (interaction) => {
         try {
             const stickerName = `sticker_${Date.now().toString().slice(-6)}`;
             
-            // 取得第一個對應的伺服器實體
             const guild = interaction.client.guilds.cache.first(); 
             if (!guild) throw new Error('找不到對應的伺服器');
 
-            // 建立貼圖
+            // 建立伺服器貼圖
             const createdSticker = await guild.stickers.create({
                 file: imageUrl,
                 name: stickerName,
@@ -279,11 +312,11 @@ client.on('interactionCreate', async (interaction) => {
 
             await interaction.editReply(`✅ 已成功新增貼圖！名稱：\`${createdSticker.name}\``);
 
-            // 通知投稿者（包含投稿者名稱與生成的貼圖）
+            // 通知投稿者（包含投稿者名稱與直接展示生成好的貼圖）
             try {
                 const authorUser = await client.users.fetch(authorId);
                 await authorUser.send({
-                    content: `🎉 **您的貼圖已成功新增！**\n**投稿者：** ${authorUser.tag} (<@${authorId}>)\n**貼圖：**`,
+                    content: `🎉 **您的貼圖已成功新增！**\n**投稿者：** ${authorUser.tag} (<@${authorId}>)\n**生成的貼圖：**`,
                     stickers: [createdSticker]
                 });
             } catch (e) {
@@ -292,7 +325,7 @@ client.on('interactionCreate', async (interaction) => {
 
         } catch (error) {
             console.error('建立貼圖失敗：', error);
-            await interaction.editReply(`❌ 建立貼圖失敗！請確認圖片格式（需 <512KB、PNG/JPEG）或伺服器貼圖名額是否已滿。`);
+            await interaction.editReply(`❌ 建立貼圖失敗！請檢查圖片格式（需小於 512KB、PNG/JPEG）或伺服器貼圖空間是否已滿。`);
         }
 
     } else if (action === 'reject') {
@@ -300,7 +333,7 @@ client.on('interactionCreate', async (interaction) => {
 
         try {
             const authorUser = await client.users.fetch(authorId);
-            await authorUser.send(`❌ 很抱歉，您投稿的圖片未被管理員批准。\n**投稿者：** ${authorUser.tag}`);
+            await authorUser.send(`❌ 很抱歉，您投稿的圖片未被管理員批准。\n**投稿者：** <@${authorId}>`);
         } catch (e) {}
     }
 });
