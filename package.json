@@ -1,7 +1,7 @@
 {
   "name": "sticker-approval-bot",
-  "version": "1.0.0",
-  "description": "Discord Sticker Approval Bot",
+  "version": "3.0.0",
+  "description": "Discord Sticker Approval Bot with Persistent Storage",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
