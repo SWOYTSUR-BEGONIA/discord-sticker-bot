@@ -114,15 +114,56 @@ client.on(Events.InteractionCreate, async (interaction) => {
         const channel = interaction.options.getChannel('頻道');
         db.targetChannelId = channel.id;
         saveDB(db);
-        return interaction.reply({ content: `✅ 成功將投稿頻道設定為：${channel}`, flags: [MessageFlags.Ephemeral] }); }  if (commandName === '新增管理員') { const targetUser = interaction.options.getUser('成員'); if (db.adminIds.includes(targetUser.id)) { return interaction.reply({ content: `⚠️ 該用戶已經在管理員名單中！`, flags: [MessageFlags.Ephemeral] }); } db.adminIds.push(targetUser.id); saveDB(db); return interaction.reply({ content: `✅ 已將 ${targetUser.tag} 新增為管理員！`, flags: [MessageFlags.Ephemeral] });
+        return interaction.reply({ content: `✅ 成功將投稿頻道設定為：${channel}`, flags: [MessageFlags.Ephemeral] });
+    }
+
+    if (commandName === '新增管理員') {
+        const targetUser = interaction.options.getUser('成員');
+        if (db.adminIds.includes(targetUser.id)) {
+            return interaction.reply({ content: `⚠️ 該用戶已經在管理員名單中！`, flags: [MessageFlags.Ephemeral] });
+        }
+        db.adminIds.push(targetUser.id);
+        saveDB(db);
+        return interaction.reply({ content: `✅ 已將 ${targetUser.tag} 新增為管理員！`, flags: [MessageFlags.Ephemeral] });
     }
 
     if (commandName === '刪除管理員') {
         const targetUser = interaction.options.getUser('成員');
         db.adminIds = db.adminIds.filter(id => id !== targetUser.id);
         saveDB(db);
-        return interaction.reply({ content: `✅ 已將 ${targetUser.tag} 從管理員中移除！`, flags: [MessageFlags.Ephemeral] }); }  if (commandName === '查看設定') { const channelMention = db.targetChannelId ? `<#${db.targetChannelId}>` : '尚未設定';
-        const adminList = db.adminIds.length > 0 ? db.adminIds.map(id => `<@${id}>`).join(', ') : '無'; const infoEmbed = new EmbedBuilder() .setTitle('⚙️ 當前設定') .addFields({ name: '頻道', value: channelMention }, { name: '管理員', value: adminList }); return interaction.reply({ embeds: [infoEmbed], flags: [MessageFlags.Ephemeral] }); }  if (commandName === '重置設定') { db.targetChannelId = null; db.adminIds = []; saveDB(db); return interaction.reply({ content: '🗑️ 已清空所有設定！', flags: [MessageFlags.Ephemeral] }); } });  client.on(Events.MessageCreate, async (message) => { if (message.author.bot \vert{}\vert{} !db.targetChannelId \vert{}\vert{} message.channel.id !== db.targetChannelId) return;  const attachment = message.attachments.first(); if (!attachment \vert{}\vert{} !attachment.contentType \vert{}\vert{} !attachment.contentType.startsWith('image/')) return;  const row = new ActionRowBuilder().addComponents( new ButtonBuilder() .setCustomId(`approve_${message.author.id}_${Buffer.from(attachment.url).toString('base64')}`) .setLabel('是 (新增為貼圖)') .setStyle(ButtonStyle.Success), new ButtonBuilder() .setCustomId(`reject_${message.author.id}`)
+        return interaction.reply({ content: `✅ 已將 ${targetUser.tag} 從管理員中移除！`, flags: [MessageFlags.Ephemeral] });
+    }
+
+    if (commandName === '查看設定') {
+        const channelMention = db.targetChannelId ? `<#${db.targetChannelId}>` : '尚未設定';
+        const adminList = db.adminIds.length > 0 ? db.adminIds.map(id => `<@${id}>`).join(', ') : '無';
+        const infoEmbed = new EmbedBuilder()
+            .setTitle('⚙️ 當前設定')
+            .addFields({ name: '頻道', value: channelMention }, { name: '管理員', value: adminList });
+        return interaction.reply({ embeds: [infoEmbed], flags: [MessageFlags.Ephemeral] });
+    }
+
+    if (commandName === '重置設定') {
+        db.targetChannelId = null;
+        db.adminIds = [];
+        saveDB(db);
+        return interaction.reply({ content: '🗑️ 已清空所有設定！', flags: [MessageFlags.Ephemeral] });
+    }
+});
+
+client.on(Events.MessageCreate, async (message) => {
+    if (message.author.bot || !db.targetChannelId || message.channel.id !== db.targetChannelId) return;
+
+    const attachment = message.attachments.first();
+    if (!attachment || !attachment.contentType || !attachment.contentType.startsWith('image/')) return;
+
+    const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId(`approve_${message.author.id}_${Buffer.from(attachment.url).toString('base64')}`)
+            .setLabel('是 (新增為貼圖)')
+            .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+            .setCustomId(`reject_${message.author.id}`)
             .setLabel('否 (駁回)')
             .setStyle(ButtonStyle.Danger)
     );
@@ -158,7 +199,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await interaction.update({ content: '⏳ 建立貼圖中...', embeds: [], components: [] });
 
         try {
-            const stickerName = `sticker_${Date.now().toString().slice(-6)}`; const guild = interaction.client.guilds.cache.first();  const createdSticker = await guild.stickers.create({ file: imageUrl, name: stickerName, tags: 'custom', description: `由 <@${authorId}> 投稿`
+            const stickerName = `sticker_${Date.now().toString().slice(-6)}`;
+            const guild = interaction.client.guilds.cache.first(); 
+
+            const createdSticker = await guild.stickers.create({
+                file: imageUrl,
+                name: stickerName,
+                tags: 'custom',
+                description: `由 <@${authorId}> 投稿`
             });
 
             await interaction.editReply(`✅ 已成功新增貼圖：\`${createdSticker.name}\``);
