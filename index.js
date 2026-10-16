@@ -34,18 +34,14 @@ function loadDB() {
             const data = fs.readFileSync(DB_FILE, 'utf8');
             return JSON.parse(data);
         }
-    } catch (e) {
-        console.error('讀取資料庫失敗：', e);
-    }
+    } catch (e) {}
     return { targetChannelId: null, adminIds: [] };
 }
 
 function saveDB(db) {
     try {
         fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf8');
-    } catch (e) {
-        console.error('儲存資料庫失敗：', e);
-    }
+    } catch (e) {}
 }
 
 let db = loadDB();
@@ -55,7 +51,7 @@ const commands = [
     new SlashCommandBuilder().setName('幫助').setDescription('顯示幫助頁面'),
     new SlashCommandBuilder()
         .setName('設定頻道')
-        .setDescription('設定接收貼圖投稿的專用頻道')
+        .setDescription('設定接收表情符號投稿的專用頻道')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         .addChannelOption(option => option.setName('頻道').setDescription('選擇文字頻道').setRequired(true)),
     new SlashCommandBuilder()
@@ -79,8 +75,7 @@ const commands = [
 ].map(command => command.toJSON());
 
 client.once(Events.ClientReady, async () => {
-    console.log(`🤖 貼圖新增工具已成功上線！登入身分：${client.user.tag}`);
-
+    console.log(`🤖 表情符號新增工具已成功上線！登入身分：${client.user.tag}`);
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
@@ -92,17 +87,13 @@ client.once(Events.ClientReady, async () => {
 
 client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
-
     const { commandName } = interaction;
 
     if (commandName === 'help' || commandName === '幫助') {
         const helpEmbed = new EmbedBuilder()
-            .setTitle('📖 貼圖新增工具 — 幫助與說明')
+            .setTitle('📖 表情符號新增工具 — 說明')
             .setColor(0x00A8FF)
-            .setDescription('在指定頻道發送圖片即可自動送出審核。')
-            .addFields(
-                { name: '⚙️ 管理員指令', value: '`/設定頻道`\n`/新增管理員`\n`/刪除管理員`\n`/查看設定`\n`/重置設定`' }
-            );
+            .setDescription('在指定頻道發送圖片，機器人會直接在該頻道發送審核訊息給管理員。');
         return interaction.reply({ embeds: [helpEmbed], flags: [MessageFlags.Ephemeral] });
     }
 
@@ -151,16 +142,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
 });
 
+// 當用戶在指定頻道發送圖片時
 client.on(Events.MessageCreate, async (message) => {
     if (message.author.bot || !db.targetChannelId || message.channel.id !== db.targetChannelId) return;
 
     const attachment = message.attachments.first();
     if (!attachment || !attachment.contentType || !attachment.contentType.startsWith('image/')) return;
 
+    // 組合按鈕與審核面板
     const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
             .setCustomId(`approve_${message.author.id}_${Buffer.from(attachment.url).toString('base64')}`)
-            .setLabel('是 (新增為貼圖)')
+            .setLabel('是 (新增為表情符號)')
             .setStyle(ButtonStyle.Success),
         new ButtonBuilder()
             .setCustomId(`reject_${message.author.id}`)
@@ -168,65 +161,64 @@ client.on(Events.MessageCreate, async (message) => {
             .setStyle(ButtonStyle.Danger)
     );
 
+    // 列出管理員 @ 提及，確保管理員能第一時間注意到
+    const adminMentions = db.adminIds.length > 0 ? db.adminIds.map(id => `<@${id}>`).join(' ') : '（未設定管理員）';
+
     const embed = new EmbedBuilder()
-        .setTitle('📢 新的貼圖投稿審核')
-        .setDescription(`**投稿者：** ${message.author.tag} (<@${message.author.id}>)`)
+        .setTitle('📢 新的表情符號投稿審核')
+        .setDescription(`**投稿者：** ${message.author.tag} (<@${message.author.id}>)\n請管理員點擊下方按鈕決定是否新增為伺服器表情符號。`)
         .setImage(attachment.url)
         .setColor(0x3498DB);
 
-    for (const adminId of db.adminIds) {
-        try {
-            const adminUser = await client.users.fetch(adminId);
-            if (adminUser) {
-                await adminUser.send({ content: `來自 **${message.guild.name}** 的審核：`, embeds: [embed], components: [row] });
-            }
-        } catch (e) {}
-    }
-
-    try { await message.author.send(`✅ 您的圖片已成功送出審核！`); } catch (e) {}
+    // 直接發送在同一個頻道內！
+    await message.channel.send({
+        content: `請管理員進行審核：${adminMentions}`,
+        embeds: [embed],
+        components: [row]
+    });
 });
 
+// 處理管理員點擊按鈕
 client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isButton()) return;
-    if (!db.adminIds.includes(interaction.user.id)) {
-        return interaction.reply({ content: '❌ 您不是管理員！', flags: [MessageFlags.Ephemeral] });
+    if (!db.adminIds.includes(interaction.user.id) && !interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
+        return interaction.reply({ content: '❌ 您不是審核管理員！', flags: [MessageFlags.Ephemeral] });
     }
 
     const [action, authorId, encodedUrl] = interaction.customId.split('_');
 
     if (action === 'approve') {
         const imageUrl = Buffer.from(encodedUrl, 'base64').toString('ascii');
-        await interaction.update({ content: '⏳ 建立貼圖中...', embeds: [], components: [] });
+        await interaction.update({ content: '⏳ 正在建立伺服器表情符號...', embeds: [], components: [] });
 
         try {
-            const stickerName = `sticker_${Date.now().toString().slice(-6)}`;
-            const guild = interaction.client.guilds.cache.first(); 
+            const emojiName = `emoji_${Date.now().toString().slice(-6)}`;
+            const guild = interaction.guild; 
 
-            const createdSticker = await guild.stickers.create({
-                file: imageUrl,
-                name: stickerName,
-                tags: 'custom',
-                description: `由 <@${authorId}> 投稿`
+            // 建立伺服器表情符號 (Custom Emoji)
+            const createdEmoji = await guild.emojis.create({
+                attachment: imageUrl,
+                name: emojiName,
+                reason: `由用戶投稿`
             });
 
-            await interaction.editReply(`✅ 已成功新增貼圖：\`${createdSticker.name}\``);
+            await interaction.editReply(`✅ 已成功新增表情符號：${createdEmoji} (名稱: \`${emojiName}\`)`);
 
+            // 同時私訊通知投稿者：包含投稿者名稱、以及直接把生成好的表情符號貼上
             try {
                 const authorUser = await client.users.fetch(authorId);
-                await authorUser.send({
-                    content: `🎉 **您的貼圖已成功新增！**\n**投稿者：** ${authorUser.tag} (<@${authorId}>)\n**生成的貼圖：**`,
-                    stickers: [createdSticker]
-                });
+                await authorUser.send(`🎉 **您的表情符號已成功新增！**\n**投稿者：** ${authorUser.tag} (<@${authorId}>)\n**生成的表情符號：** ${createdEmoji}`);
             } catch (e) {}
 
         } catch (error) {
-            await interaction.editReply(`❌ 建立貼圖失敗（請檢查圖片大小是否小於 512KB）。`);
+            console.error(error);
+            await interaction.editReply(`❌ 建立表情符號失敗！請檢查圖片是否符合 Discord 表情符號限制（小於 256KB、建議正方形）。`);
         }
     } else if (action === 'reject') {
-        await interaction.update({ content: '❌ 已駁回。', embeds: [], components: [] });
+        await interaction.update({ content: '❌ 已駁回此投稿。', embeds: [], components: [] });
         try {
             const authorUser = await client.users.fetch(authorId);
-            await authorUser.send(`❌ 很抱歉，您的投稿已被駁回。`);
+            await authorUser.send(`❌ 很抱歉，您投稿的圖片已被管理員駁回。\n**投稿者：** <@${authorId}>`);
         } catch (e) {}
     }
 });
